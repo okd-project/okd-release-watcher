@@ -6,46 +6,24 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"k8s.io/klog/v2"
 )
 
 const (
-	gcsBucket       = "test-platform-results"
-	gcsAPIBase      = "https://storage.googleapis.com/storage/v1/b/" + gcsBucket + "/o"
-	gcsWebBase      = "https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/" + gcsBucket + "/"
-	agentJobName    = "periodic-ci-openshift-release-main-claude-payload-agent-okd-scos-no-slack"
-	agentJobPrefix  = "logs/" + agentJobName + "/"
 	artifactSubpath = "artifacts/claude-payload-agent/openshift-claude-payload-agent/artifacts/"
 )
 
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 type gcsListResponse struct {
-	Prefixes      []string  `json:"prefixes,omitempty"`
-	Items         []gcsItem `json:"items,omitempty"`
-	NextPageToken string    `json:"nextPageToken,omitempty"`
+	Items []gcsItem `json:"items,omitempty"`
 }
 
 type gcsItem struct {
-	Name        string `json:"name"`
-	TimeCreated string `json:"timeCreated"`
-	Size        string `json:"size"`
-}
-
-type AgentBuildIndex struct {
-	mu      sync.RWMutex
-	entries map[string]agentBuildEntry
-}
-
-type agentBuildEntry struct {
-	BuildID    string
-	AutodlPath string
-	HTMLPath   string
+	Name string `json:"name"`
 }
 
 type autodlJSON struct {
@@ -73,160 +51,107 @@ type PayloadTriageRow struct {
 	ForceAcceptRecommended string `json:"force_accept_recommended"`
 }
 
-func BuildAgentIndex(maxBuilds int) (*AgentBuildIndex, error) {
-	index := &AgentBuildIndex{
-		entries: make(map[string]agentBuildEntry),
-	}
+type AnalysisResult struct {
+	Rows    []PayloadTriageRow
+	HTMLURL string
+}
 
-	buildIDs, err := listAgentBuilds(maxBuilds)
+// FetchAnalysisFromProwURL extracts the bucket and build ID from a Prow job URL
+// and fetches the claude-payload-agent analysis artifacts from GCS.
+func FetchAnalysisFromProwURL(prowURL string, tag string) (*AnalysisResult, error) {
+	bucket, jobPath, err := parseProwURL(prowURL)
 	if err != nil {
-		return nil, fmt.Errorf("listing agent builds: %w", err)
+		return nil, fmt.Errorf("parsing Prow URL: %w", err)
 	}
 
-	klog.V(2).Infof("Found %d agent builds, scanning for artifacts", len(buildIDs))
+	gcsAPIBase := "https://storage.googleapis.com/storage/v1/b/" + bucket + "/o"
+	prefix := jobPath + "/" + artifactSubpath
 
-	sem := make(chan struct{}, 10)
-	var wg sync.WaitGroup
-
-	for _, buildID := range buildIDs {
-		wg.Add(1)
-		go func(bid string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			entries, err := scanBuildArtifacts(bid)
-			if err != nil {
-				klog.V(3).Infof("Error scanning build %s: %v", bid, err)
-				return
-			}
-
-			index.mu.Lock()
-			for tag, entry := range entries {
-				if _, exists := index.entries[tag]; !exists {
-					index.entries[tag] = entry
-				}
-			}
-			index.mu.Unlock()
-		}(buildID)
+	autodlPath, htmlPath, err := findArtifacts(gcsAPIBase, prefix, tag)
+	if err != nil {
+		return nil, fmt.Errorf("finding artifacts: %w", err)
 	}
 
-	wg.Wait()
-	klog.V(2).Infof("Agent index built with %d entries", len(index.entries))
-	return index, nil
-}
+	result := &AnalysisResult{}
 
-func listAgentBuilds(maxBuilds int) ([]string, error) {
-	var allPrefixes []string
-	pageToken := ""
+	if htmlPath != "" {
+		result.HTMLURL = fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, htmlPath)
+	}
 
-	for {
-		u := fmt.Sprintf("%s?prefix=%s&delimiter=/", gcsAPIBase, url.QueryEscape(agentJobPrefix))
-		if pageToken != "" {
-			u += "&pageToken=" + url.QueryEscape(pageToken)
-		}
-
-		resp, err := httpClient.Get(u)
+	if autodlPath != "" {
+		rows, err := fetchAutodlJSON(gcsAPIBase, autodlPath)
 		if err != nil {
-			return nil, fmt.Errorf("GET %s: %w", u, err)
+			klog.V(2).Infof("Failed to fetch autodl.json for %s: %v", tag, err)
+		} else {
+			result.Rows = rows
 		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			return nil, fmt.Errorf("GET %s returned %d: %s", u, resp.StatusCode, string(body))
-		}
-
-		var result gcsListResponse
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, fmt.Errorf("decoding GCS response: %w", err)
-		}
-
-		for _, prefix := range result.Prefixes {
-			parts := strings.Split(strings.TrimSuffix(prefix, "/"), "/")
-			if len(parts) > 0 {
-				allPrefixes = append(allPrefixes, parts[len(parts)-1])
-			}
-		}
-
-		if result.NextPageToken == "" {
-			break
-		}
-		pageToken = result.NextPageToken
 	}
 
-	sort.Sort(sort.Reverse(sort.StringSlice(allPrefixes)))
-
-	if len(allPrefixes) > maxBuilds {
-		allPrefixes = allPrefixes[:maxBuilds]
-	}
-
-	return allPrefixes, nil
+	return result, nil
 }
 
-func scanBuildArtifacts(buildID string) (map[string]agentBuildEntry, error) {
-	prefix := agentJobPrefix + buildID + "/" + artifactSubpath
+// parseProwURL extracts the bucket name and job path from a Prow URL.
+// Input:  https://prow.ci.openshift.org/view/gs/test-platform-results-public/logs/job-name/12345
+// Output: bucket="test-platform-results-public", jobPath="logs/job-name/12345"
+func parseProwURL(prowURL string) (bucket, jobPath string, err error) {
+	const marker = "/view/gs/"
+	idx := strings.Index(prowURL, marker)
+	if idx < 0 {
+		return "", "", fmt.Errorf("URL does not contain %q: %s", marker, prowURL)
+	}
+
+	path := prowURL[idx+len(marker):]
+	slashIdx := strings.Index(path, "/")
+	if slashIdx < 0 {
+		return "", "", fmt.Errorf("no path after bucket in URL: %s", prowURL)
+	}
+
+	bucket = path[:slashIdx]
+	jobPath = path[slashIdx+1:]
+	return bucket, jobPath, nil
+}
+
+func findArtifacts(gcsAPIBase, prefix, tag string) (autodlPath, htmlPath string, err error) {
 	u := fmt.Sprintf("%s?prefix=%s", gcsAPIBase, url.QueryEscape(prefix))
+	klog.V(2).Infof("Listing GCS artifacts: %s", u)
 
 	resp, err := httpClient.Get(u)
 	if err != nil {
-		return nil, fmt.Errorf("GET %s: %w", u, err)
+		return "", "", fmt.Errorf("GET %s: %w", u, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET returned %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", fmt.Errorf("GET returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var result gcsListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
+		return "", "", fmt.Errorf("decoding response: %w", err)
 	}
 
-	entries := make(map[string]agentBuildEntry)
+	expectedAutodl := fmt.Sprintf("payload-analysis-%s-autodl.json", tag)
+	expectedHTML := fmt.Sprintf("payload-analysis-%s-summary.html", tag)
 
 	for _, item := range result.Items {
 		filename := item.Name[strings.LastIndex(item.Name, "/")+1:]
-
-		if strings.HasPrefix(filename, "payload-analysis-") && strings.HasSuffix(filename, "-autodl.json") {
-			tag := strings.TrimPrefix(filename, "payload-analysis-")
-			tag = strings.TrimSuffix(tag, "-autodl.json")
-
-			htmlFilename := fmt.Sprintf("payload-analysis-%s-summary.html", tag)
-			htmlPath := prefix + htmlFilename
-
-			entries[tag] = agentBuildEntry{
-				BuildID:    buildID,
-				AutodlPath: item.Name,
-				HTMLPath:   htmlPath,
-			}
+		if filename == expectedAutodl {
+			autodlPath = item.Name
+		}
+		if filename == expectedHTML {
+			htmlPath = item.Name
 		}
 	}
 
-	return entries, nil
-}
-
-func (idx *AgentBuildIndex) GetAnalysis(tag string) (*[]PayloadTriageRow, string, error) {
-	idx.mu.RLock()
-	entry, ok := idx.entries[tag]
-	idx.mu.RUnlock()
-
-	if !ok {
-		return nil, "", fmt.Errorf("no analysis found for tag %s", tag)
+	if autodlPath == "" && htmlPath == "" {
+		return "", "", fmt.Errorf("no analysis artifacts found for tag %s", tag)
 	}
 
-	htmlURL := gcsWebBase + entry.HTMLPath
-
-	rows, err := fetchAutodlJSON(entry.AutodlPath)
-	if err != nil {
-		klog.V(2).Infof("Failed to fetch autodl.json for %s: %v", tag, err)
-		return nil, htmlURL, nil
-	}
-
-	return &rows, htmlURL, nil
+	return autodlPath, htmlPath, nil
 }
 
-func fetchAutodlJSON(objectPath string) ([]PayloadTriageRow, error) {
+func fetchAutodlJSON(gcsAPIBase, objectPath string) ([]PayloadTriageRow, error) {
 	u := fmt.Sprintf("%s/%s?alt=media", gcsAPIBase, url.PathEscape(objectPath))
 
 	resp, err := httpClient.Get(u)

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pskrbasu/okd-release-watcher/pkg/gcs"
+	"github.com/okd-project/okd-release-watcher/pkg/gcs"
 	"k8s.io/klog/v2"
 )
 
@@ -31,6 +31,8 @@ var DefaultStreams = []string{
 	"4.22.0-0.okd-scos",
 	"5.0.0-0.okd-scos-nightly",
 	"5.0.0-0.okd-scos",
+	"5.1.0-0.okd-scos-nightly",
+	"5.1.0-0.okd-scos",
 }
 
 type Options struct {
@@ -110,6 +112,7 @@ type TagReport struct {
 	AnalysisHTMLURL string       `json:"analysis_html_url,omitempty"`
 	RootCauses      []string     `json:"root_causes,omitempty"`
 	RejectionStreak int          `json:"rejection_streak,omitempty"`
+	AgentProwURL    string       `json:"-"`
 }
 
 type JobFailure struct {
@@ -125,18 +128,6 @@ func GenerateReport(o *Options) (*Report, error) {
 	}
 
 	cutoff := time.Now().UTC().Add(-o.Lookback)
-
-	var agentIndex *gcs.AgentBuildIndex
-	var agentErr error
-	var agentWg sync.WaitGroup
-	agentWg.Add(1)
-	go func() {
-		defer agentWg.Done()
-		agentIndex, agentErr = gcs.BuildAgentIndex(100)
-		if agentErr != nil {
-			klog.Errorf("Failed to build agent index: %v", agentErr)
-		}
-	}()
 
 	type streamResult struct {
 		idx    int
@@ -166,11 +157,7 @@ func GenerateReport(o *Options) (*Report, error) {
 		streamReports[r.idx] = r.report
 	}
 
-	agentWg.Wait()
-
-	if agentIndex != nil && agentErr == nil {
-		enrichWithAnalysis(streamReports, agentIndex)
-	}
+	enrichWithAnalysis(streamReports)
 
 	report.Streams = streamReports
 	return report, nil
@@ -353,33 +340,41 @@ func processTag(stream string, tag Tag) TagReport {
 		return tr.InformingFailed[i].Name < tr.InformingFailed[j].Name
 	})
 
+	if agent, ok := detail.Results.AsyncJobs["claude-payload-agent"]; ok && agent.URL != "" {
+		tr.AgentProwURL = agent.URL
+	}
+
 	return tr
 }
 
-func enrichWithAnalysis(streams []StreamReport, index *gcs.AgentBuildIndex) {
+func enrichWithAnalysis(streams []StreamReport) {
 	var wg sync.WaitGroup
 	for i := range streams {
 		for j := range streams[i].FailedRejected {
-			if streams[i].FailedRejected[j].Phase == "Accepted" {
+			tr := &streams[i].FailedRejected[j]
+			if tr.Phase == "Accepted" || tr.AgentProwURL == "" {
 				continue
 			}
 			wg.Add(1)
-			go func(sr *StreamReport, tr *TagReport) {
+			go func(tr *TagReport) {
 				defer wg.Done()
-				rows, htmlURL, err := index.GetAnalysis(tr.Name)
+				result, err := gcs.FetchAnalysisFromProwURL(tr.AgentProwURL, tr.Name)
 				if err != nil {
 					klog.V(2).Infof("No analysis found for %s: %v", tr.Name, err)
 					return
 				}
-				tr.AnalysisHTMLURL = htmlURL
-				if rows != nil {
-					for _, row := range *rows {
-						if row.RootCauseSummary != "" {
-							tr.RootCauses = append(tr.RootCauses, fmt.Sprintf("[%s] %s", row.JobName, row.RootCauseSummary))
+				tr.AnalysisHTMLURL = result.HTMLURL
+				seen := make(map[string]bool)
+				for _, row := range result.Rows {
+					if row.RootCauseSummary != "" {
+						key := fmt.Sprintf("[%s] %s", row.JobName, row.RootCauseSummary)
+						if !seen[key] {
+							seen[key] = true
+							tr.RootCauses = append(tr.RootCauses, key)
 						}
 					}
 				}
-			}(&streams[i], &streams[i].FailedRejected[j])
+			}(tr)
 		}
 	}
 	wg.Wait()

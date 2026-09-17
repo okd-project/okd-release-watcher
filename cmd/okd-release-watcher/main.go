@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pskrbasu/okd-release-watcher/pkg/report"
-	"github.com/pskrbasu/okd-release-watcher/pkg/server"
+	"github.com/okd-project/okd-release-watcher/pkg/report"
+	"github.com/okd-project/okd-release-watcher/pkg/server"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"k8s.io/klog/v2"

@@ -13,13 +13,13 @@ A CLI tool and Slack bot backend that monitors OKD release streams for failed an
 ## Installation
 
 ```bash
-go install github.com/pskrbasu/okd-release-watcher/cmd/okd-release-watcher@latest
+go install github.com/okd-project/okd-release-watcher/cmd/okd-release-watcher@latest
 ```
 
 Or build from source:
 
 ```bash
-git clone https://github.com/pskrbasu/okd-release-watcher.git
+git clone https://github.com/okd-project/okd-release-watcher.git
 cd okd-release-watcher
 go build -o okd-release-watcher ./cmd/okd-release-watcher
 ```

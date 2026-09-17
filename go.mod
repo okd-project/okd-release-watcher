@@ -1,4 +1,4 @@
-module github.com/pskrbasu/okd-release-watcher
+module github.com/okd-project/okd-release-watcher
 
 go 1.26.3
 

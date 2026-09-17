@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pskrbasu/okd-release-watcher/pkg/report"
+	"github.com/okd-project/okd-release-watcher/pkg/report"
 	"k8s.io/klog/v2"
 )
 
@@ -145,7 +145,7 @@ func handleReport(o *report.Options, token, channel, ts, text string) {
 	sendSlackMessage(token, channel, ts, msg)
 }
 
-const ReportURL = "https://pskrbasu.github.io/okd-release-watcher/"
+const ReportURL = "https://okd-project.github.io/okd-release-watcher/"
 
 func FormatSlackMessage(r *report.Report, slackAlias string) string {
 	var b strings.Builder
@@ -160,7 +160,11 @@ func FormatSlackMessage(r *report.Report, slackAlias string) string {
 		isStale := sr.AcceptedStale || sr.BuildStale
 
 		if isStale {
-			fmt.Fprintf(&b, "%s — ⚠️ Stale (last accepted: %s ago)", sr.StreamName, sr.LastAcceptedAge)
+			if sr.LastAcceptedAge == "never" {
+				fmt.Fprintf(&b, "%s — ⚠️ Stale (never accepted)", sr.StreamName)
+			} else {
+				fmt.Fprintf(&b, "%s — ⚠️ Stale (last accepted: %s ago)", sr.StreamName, sr.LastAcceptedAge)
+			}
 		} else {
 			fmt.Fprintf(&b, "%s — ✅ Healthy", sr.StreamName)
 		}

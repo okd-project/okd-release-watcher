@@ -419,7 +419,7 @@ func (r *Report) HTML() string {
 	}
 
 	b.WriteString(`<footer>
-  OKD Release Watcher &middot; <a href="https://github.com/pskrbasu/okd-release-watcher">github.com/pskrbasu/okd-release-watcher</a>
+  OKD Release Watcher &middot; <a href="https://github.com/okd-project/okd-release-watcher">github.com/okd-project/okd-release-watcher</a>
 </footer>
 
 <script>
