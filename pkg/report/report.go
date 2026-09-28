@@ -27,8 +27,6 @@ var (
 )
 
 var DefaultStreams = []string{
-	"4.22.0-0.okd-scos-nightly",
-	"4.22.0-0.okd-scos",
 	"5.0.0-0.okd-scos-nightly",
 	"5.0.0-0.okd-scos",
 	"5.1.0-0.okd-scos-nightly",
