@@ -223,6 +223,27 @@ func (r *Report) HTML() string {
     text-align: center;
   }
   footer a { color: var(--blue); text-decoration: none; }
+  .legend {
+    margin-top: 24px;
+    padding: 16px 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 13px;
+  }
+  .legend-title {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .legend-item {
+    margin: 4px 0;
+    color: var(--text-muted);
+  }
+  .legend-item strong { color: var(--text); }
 </style>
 </head>
 <body>
@@ -283,9 +304,11 @@ func (r *Report) HTML() string {
 		}
 
 		if sr.AcceptedStale || sr.BuildStale {
-			b.WriteString("  <td><span class=\"badge badge-stale\">Stale</span></td>\n")
+			b.WriteString("  <td><span class=\"badge badge-stale\">🚨 Stale</span></td>\n")
+		} else if sr.LatestPhase == "Rejected" || sr.LatestPhase == "Failed" {
+			b.WriteString("  <td><span class=\"badge badge-stale\">⚠️ Warning</span></td>\n")
 		} else {
-			b.WriteString("  <td><span class=\"badge badge-healthy\">Healthy</span></td>\n")
+			b.WriteString("  <td><span class=\"badge badge-healthy\">✅ Healthy</span></td>\n")
 		}
 
 		b.WriteString("</tr>\n")
@@ -418,7 +441,14 @@ func (r *Report) HTML() string {
 		b.WriteString("  </div>\n</div>\n\n")
 	}
 
-	b.WriteString(`<footer>
+	b.WriteString(`<div class="legend">
+  <div class="legend-title">Status Guide</div>
+  <div class="legend-item">✅ <strong>Healthy</strong> — Latest payload accepted, stream producing accepted builds within 48h</div>
+  <div class="legend-item">⚠️ <strong>Warning</strong> — Latest payload rejected or failed to assemble, but stream has recent accepted builds</div>
+  <div class="legend-item">🚨 <strong>Stale</strong> — No accepted payload in 48h+ (accepted staleness) or no payload built in 72h+ (build staleness)</div>
+</div>
+
+<footer>
   OKD Release Watcher &middot; <a href="https://github.com/okd-project/okd-release-watcher">github.com/okd-project/okd-release-watcher</a>
 </footer>
 

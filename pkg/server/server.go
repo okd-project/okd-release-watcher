@@ -161,23 +161,21 @@ func FormatSlackMessage(r *report.Report, slackAlias string) string {
 
 		if isStale {
 			if sr.LastAcceptedAge == "never" {
-				fmt.Fprintf(&b, "%s — ⚠️ Stale (never accepted)", sr.StreamName)
+				fmt.Fprintf(&b, "%s — 🚨 Stale — no payload ever accepted\n", sr.StreamName)
 			} else {
-				fmt.Fprintf(&b, "%s — ⚠️ Stale (last accepted: %s ago)", sr.StreamName, sr.LastAcceptedAge)
+				fmt.Fprintf(&b, "%s — 🚨 Stale — no accepted payload in %s\n", sr.StreamName, sr.LastAcceptedAge)
 			}
+		} else if sr.LatestPhase == "Rejected" {
+			fmt.Fprintf(&b, "%s — ⚠️ Latest payload rejected — last accepted %s ago\n", sr.StreamName, sr.LastAcceptedAge)
+		} else if sr.LatestPhase == "Failed" {
+			fmt.Fprintf(&b, "%s — ⚠️ Latest payload failed to assemble — last accepted %s ago\n", sr.StreamName, sr.LastAcceptedAge)
 		} else {
-			fmt.Fprintf(&b, "%s — ✅ Healthy", sr.StreamName)
-		}
-
-		if sr.LatestPhase != "" {
 			latestAge := ""
 			if sr.LastBuiltAge != "" {
 				latestAge = fmt.Sprintf(" (%s ago)", sr.LastBuiltAge)
 			}
-			fmt.Fprintf(&b, " | Latest: %s%s", sr.LatestPhase, latestAge)
+			fmt.Fprintf(&b, "%s — ✅ Healthy — latest payload accepted%s\n", sr.StreamName, latestAge)
 		}
-
-		b.WriteString("\n")
 	}
 
 	fmt.Fprintf(&b, "\nFull report: %s", ReportURL)
