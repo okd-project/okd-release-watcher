@@ -173,6 +173,7 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 	}
 
 	var recentTags []Tag
+	var latestTag *Tag
 	for _, tag := range tags.Tags {
 		if tag.Phase != "Accepted" && tag.Phase != "Rejected" && tag.Phase != "Failed" {
 			continue
@@ -180,6 +181,8 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		if sr.LatestTag == "" {
 			sr.LatestTag = tag.Name
 			sr.LatestPhase = tag.Phase
+			t := tag
+			latestTag = &t
 		}
 		ts, ok := ParseTagTimestamp(tag.Name)
 		if !ok {
@@ -188,6 +191,21 @@ func processStream(stream string, cutoff time.Time, includeHealthy bool) (Stream
 		}
 		if ts.After(cutoff) {
 			recentTags = append(recentTags, tag)
+		}
+	}
+
+	// Always include the latest tag so analysis is available even when
+	// the stream is stale and the tag falls outside the lookback window.
+	if latestTag != nil && (latestTag.Phase == "Rejected" || latestTag.Phase == "Failed") {
+		found := false
+		for _, t := range recentTags {
+			if t.Name == latestTag.Name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			recentTags = append([]Tag{*latestTag}, recentTags...)
 		}
 	}
 
