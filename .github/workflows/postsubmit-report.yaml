@@ -1,0 +1,74 @@
+name: OKD Postsubmit Report
+
+# Independent of the daily release report. Runs okd-postsubmit-watcher and keeps
+# the HTML/JSON report as a workflow artifact. Schedule/Slack cadence is TBD.
+on:
+  schedule:
+    - cron: '0 */12 * * *'   # every 12h (00:00 and 12:00 UTC)
+  workflow_dispatch:
+    inputs:
+      window:
+        description: 'Report runs started within this window (e.g. 12h, 24h)'
+        default: '12h'
+      stale_after:
+        description: 'Flag images older than this (e.g. 30d)'
+        default: '30d'
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: go build -o okd-postsubmit-watcher ./cmd/okd-postsubmit-watcher
+
+      # Optional: quay-proxy.ci.openshift.org needs credentials to read image
+      # build times. Store a docker config.json containing a quay-proxy auth
+      # entry in the QUAY_PROXY_AUTH secret. Without it the report still runs;
+      # only the "Built" column is empty.
+      - name: Configure registry auth
+        env:
+          QUAY_PROXY_AUTH: ${{ secrets.QUAY_PROXY_AUTH }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/docker"
+          if [ -n "$QUAY_PROXY_AUTH" ]; then
+            printf '%s' "$QUAY_PROXY_AUTH" > "$RUNNER_TEMP/docker/config.json"
+          else
+            echo '{}' > "$RUNNER_TEMP/docker/config.json"
+          fi
+          echo "DOCKER_CONFIG=$RUNNER_TEMP/docker" >> "$GITHUB_ENV"
+
+      - name: Generate report
+        run: |
+          mkdir -p out
+          ./okd-postsubmit-watcher report \
+            --window "${{ inputs.window || '12h' }}" \
+            --stale-after "${{ inputs.stale_after || '30d' }}" \
+            --html out/index.html \
+            --slack out/slack-message.txt \
+            --json > out/report.json
+          cat out/slack-message.txt
+
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: postsubmit-report
+          path: out/
+          retention-days: 14
+
+      - name: Post to Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.POSTSUBMIT_SLACK_WEBHOOK_URL }}
+        if: ${{ env.SLACK_WEBHOOK_URL != '' }}
+        run: |
+          curl -s -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -n --rawfile text out/slack-message.txt '{text: $text}')"
