@@ -82,6 +82,54 @@ The report shows for each stream:
   - Root cause summaries from the AI analysis
   - Current rejection streak length
 
+## Postsubmit Watcher (`okd-postsubmit-watcher`)
+
+A separate binary that reports on the OKD SCOS postsubmit image jobs
+(`branch-ci-<org>-<repo>-<branch>-okd-scos-images`) and on how fresh the images in
+the latest accepted OKD CI payloads are. It does not run as part of `okd-release-watcher`.
+
+```bash
+go build -o okd-postsubmit-watcher ./cmd/okd-postsubmit-watcher
+
+# Text report: runs in the last 12h + image state for 5.0 and 5.1
+./okd-postsubmit-watcher report
+
+# HTML + Slack summary + JSON
+./okd-postsubmit-watcher report --window 24h --stale-after 30d \
+  --html report.html --slack slack.txt --json > report.json
+```
+
+The report has two sections:
+
+1. **Recent runs**: every OKD postsubmit run started in `--window`, from Prow's live job
+   list (`prowjobs.js`, which keeps about 24h).
+2. **Image state per stream**: every image in the stream's latest accepted payload, with:
+   - when the payload's image was built
+   - the payload commit
+   - the job's latest result and commit, from stored results in Google Cloud Storage
+   - flags:
+     - **failing**: the latest run failed, so the image is stuck at its previous build
+     - **pending**: the job built a newer commit that isn't in the payload yet
+     - **stale**: built more than `--stale-after` ago
+     - **no-run**: no job results in Google Cloud Storage, which keeps about 60 days
+
+Data sources: Prow, `test-platform-results-public` in Google Cloud Storage, and the
+release controller's `/releasetag/<tag>/json`. All of these are public. Image build
+times are read from `quay-proxy.ci.openshift.org`, which **requires credentials**. The
+tool uses the standard docker/podman auth files (`DOCKER_CONFIG`, `~/.docker/config.json`,
+`REGISTRY_AUTH_FILE`). Log in with an app.ci session:
+
+```bash
+oc login https://api.ci.l2s4.p1.openshiftapps.com:6443 --web
+oc registry login --registry quay-proxy.ci.openshift.org
+```
+
+Without credentials the report still runs. Only the "Built" column and the stale flag are missing.
+
+The `.github/workflows/postsubmit-report.yaml` workflow runs it every 12h (or on demand).
+Optional secrets: `QUAY_PROXY_AUTH` (a docker config.json with a quay-proxy entry) and
+`POSTSUBMIT_SLACK_WEBHOOK_URL`.
+
 ## Architecture
 
 The tool queries two data sources:
